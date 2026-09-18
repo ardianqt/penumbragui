@@ -1,4 +1,4 @@
-name: Build GUI Release
+name: Build GUI + TUI Release
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows EXE & Publish Release
+    name: Build Windows GUI + TUI & Publish Release
     runs-on: windows-latest
 
     steps:
@@ -31,29 +31,46 @@ jobs:
         shell: bash
         run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> $GITHUB_OUTPUT
 
-      - name: Build penumbra-gui
-        shell: bash
-        run: cargo build --release -p penumbra-gui
+      - name: Setup libusb (USB backend import lib + runtime DLL)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # vcpkg is preinstalled on windows-latest; install libusb so rusb can link it,
+          # and so we can bundle the runtime DLL next to the binaries.
+          & "C:\vcpkg\vcpkg.exe" install libusb:x64-windows
+          $installed = "C:\vcpkg\installed\x64-windows"
+          if (-not (Test-Path "$installed\bin\libusb-1.0.dll")) {
+            throw "libusb-1.0.dll not found after vcpkg install"
+          }
+          # rusb's build script honors the LIBUSB env var (expects lib/ and include/).
+          echo "LIBUSB=$installed" >> $env:GITHUB_ENV
+          echo "LibUSB path: $installed"
 
-      - name: Package binary
+      - name: Build penumbra-gui and antumbra (TUI)
+        shell: bash
+        run: cargo build --release -p penumbra-gui -p antumbra
+
+      - name: Package binaries
         shell: bash
         run: |
           mkdir -p staging
           cp target/release/penumbra-gui.exe staging/
-          7z a "penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip" ./staging/*
+          cp target/release/antumbra.exe staging/
+          cp "C:/vcpkg/installed/x64-windows/bin/libusb-1.0.dll" staging/
+          7z a "penumbra-${{ steps.vars.outputs.tag }}-windows-x86_64.zip" ./staging/*
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64
-          path: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
+          name: penumbra-${{ steps.vars.outputs.tag }}-windows-x86_64
+          path: penumbra-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
-          name: Penumbra GUI ${{ steps.vars.outputs.tag }}
-          files: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
+          name: Penumbra ${{ steps.vars.outputs.tag }}
+          files: penumbra-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
           generate_release_notes: true
           draft: false
           prerelease: false
