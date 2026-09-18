@@ -1,0 +1,59 @@
+name: Build GUI Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v2.0.0)"
+        required: true
+        default: "v2.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows EXE & Publish Release
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve tag
+        id: vars
+        shell: bash
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build penumbra-gui
+        shell: bash
+        run: cargo build --release -p penumbra-gui
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp target/release/penumbra-gui.exe staging/
+          7z a "penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip" ./staging/*
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64
+          path: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Penumbra GUI ${{ steps.vars.outputs.tag }}
+          files: penumbra-gui-${{ steps.vars.outputs.tag }}-windows-x86_64.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
