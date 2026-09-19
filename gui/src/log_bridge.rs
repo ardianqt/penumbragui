@@ -97,8 +97,8 @@ impl ChannelLogger {
 
         // Default core penumbra and gui loggers to Debug so hardware and handshake details are preserved
         per_target.entry("penumbra".to_string()).or_insert(LevelFilter::Debug);
-        per_target.entry("penumbra_mtk".to_string()).or_insert(LevelFilter::Debug);
-        per_target.entry("penumbra_gui".to_string()).or_insert(LevelFilter::Debug);
+        per_target.entry("penumbra_mtk".to_string()).or_insert(LevelFilter::Warn);
+        per_target.entry("penumbra_gui".to_string()).or_insert(LevelFilter::Info);
 
         // Open (or create) the session log file in append mode.
         let path = log_file_path();

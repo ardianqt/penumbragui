@@ -107,11 +107,11 @@ fn connect_and_serve(
     let pl_data = preloader_path.map(std::fs::read).transpose()?;
     let auth_data = auth_path.map(std::fs::read).transpose()?;
 
-    info!("Searching for MediaTek port...");
+    info!("Searching for usb device...");
     let mut tries: u32 = 0;
     let port = loop {
         if let Ok(Some(port)) = PortType::find_and_open(None, None, backend) {
-            info!("Found MediaTek port");
+            info!("FOUND");
             break port;
         }
 
@@ -141,17 +141,15 @@ fn connect_and_serve(
         builder = builder.with_auth(auth.as_slice());
     }
 
-    info!("Initializing device handshake...");
+    info!("Connecting to device...");
     let mut dev = builder.build()?;
     dev.init()?;
+    info!("Connecting to device... OK");
 
-    info!("Entering DA stage...");
-    dev.enter_da_mode()?;
-
-    let (chip_name, hw_code, hw_subcode, soc_id, meid, target_cfg) = {
+    // The chipset is known right after the BROM handshake, before any DA is sent.
+    let chip_name = {
         let info = dev.devinfo();
-        let name = info
-            .chip()
+        info.chip()
             .map(|c| {
                 if let Some(m) = c.marketing_name() {
                     format!("{} ({})", c.segment_name(), m)
@@ -159,9 +157,20 @@ fn connect_and_serve(
                     c.segment_name().to_string()
                 }
             })
-            .unwrap_or_else(|| format!("0x{:04X}", info.hw_code()));
+            .unwrap_or_else(|| format!("0x{:04X}", info.hw_code()))
+    };
+    info!("ChipId: {chip_name}");
+
+    info!("Sending Download-Agent to device...");
+    dev.enter_da_mode()?;
+    info!("Sending Download-Agent to device... OK");
+
+    // SLA / DAA authorization is negotiated by the DA load above.
+    info!("Authorizing device for operations... OK");
+
+    let (hw_code, hw_subcode, soc_id, meid, target_cfg) = {
+        let info = dev.devinfo();
         (
-            name,
             info.hw_code(),
             info.hw_subcode(),
             info.soc_id().to_vec(),
@@ -194,8 +203,23 @@ fn connect_and_serve(
     let _ = evt_tx.send(Event::DeviceInfo(summary));
     let _ = evt_tx.send(Event::StatusChanged(ConnStatus::Connected(chip_name)));
 
+    info!("Reading partitions information...");
     let partitions = dev.partitions().to_vec();
     let _ = evt_tx.send(Event::PartitionsLoaded(partitions));
+    info!("Reading partitions information... OK");
+
+    // build.prop extraction needs the DA running, so it comes last.
+    info!("Reading system information...");
+    match crate::device_report::DeviceReporter::run(&mut dev, &chip_name) {
+        Ok(report) => {
+            report.log();
+            info!("Reading system information... OK");
+        }
+        Err(e) => {
+            warn!("Reading system information... FAILED: {e}");
+        }
+    }
+
     let _ = evt_tx.send(Event::InputEnabled(true));
 
     info!("Device connected and ready for operations");
