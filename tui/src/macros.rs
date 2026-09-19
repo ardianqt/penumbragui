@@ -146,12 +146,6 @@ macro_rules! dialog {
     }};
 }
 
-macro_rules! form_item {
-    ($id:expr, $label:expr, $desc:expr, $field:expr) => {
-        $crate::components::FormItem::new($id, $label, $desc, $field)
-    };
-}
-
 #[macro_export]
 macro_rules! form_section {
     ($title:expr, [ $( $item:expr ),* $(,)? ]) => {
