@@ -8,6 +8,8 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod app;
+mod auth;
+mod config;
 mod device_report;
 mod erofs;
 mod ext4;
@@ -31,6 +33,12 @@ fn main() -> Result<()> {
     let _ = log_bridge::init(log_tx, verbose);
 
     eprintln!("[penumbra-gui] session log: {}", log_bridge::log_file_path().display());
+
+    // Register the online SLA / DAA signer before the device worker starts, so
+    // that SLA protected devices can be signed through a remote server. This
+    // mirrors `antumbra`'s `init_auth()` at startup.
+    let gui_config = config::PenumbraGuiConfig::load()?;
+    auth::init_auth(gui_config)?;
 
     let (evt_tx, evt_rx) = mpsc::channel::<Event>();
     let handle = worker::spawn(evt_tx);
