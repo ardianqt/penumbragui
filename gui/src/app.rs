@@ -718,6 +718,19 @@ impl App {
                         Self::chip_badge(ui, "SLA", dev.sla, palette);
                         Self::chip_badge(ui, "DAA", dev.daa, palette);
                     });
+
+                    ui.add_space(4.0);
+                    // Exploit / bypass readiness badge
+                    ui.horizontal(|ui| {
+                        Self::chip_badge(ui, "DA PATCHED", dev.da_patched, palette);
+                    });
+                    if !dev.da_patched {
+                        ui.label(
+                            RichText::new("Bypass ops disabled: DA not patched (no exploit matched).")
+                                .color(palette.text_faint)
+                                .size(9.5),
+                        );
+                    }
                 } else {
                     ui.label(
                         RichText::new("Turn off phone & hold Vol- to connect USB.")
@@ -1573,6 +1586,10 @@ impl App {
     fn render_tools_tab(&mut self, ui: &mut Ui, palette: &Palette) {
         let is_connected = matches!(self.status, ConnStatus::Connected(_));
         let is_busy = !self.input_enabled || self.progress.active;
+        // Security bypass operations only work when the DA has been patched by
+        // an exploit (i.e. DA extensions are loaded).
+        let da_patched = self.devinfo.as_ref().is_some_and(|d| d.da_patched);
+        let bypass_enabled = is_connected && !is_busy && da_patched;
 
         ScrollArea::vertical().id_salt("tools_scroll").show(ui, |ui| {
             // Full Width Device Power & Reboot Card
@@ -1658,7 +1675,7 @@ impl App {
                             &mut cols[0],
                             "Unlock Bootloader",
                             "Set seccfg to unlocked (allows booting unverified images)",
-                            is_connected && !is_busy,
+                            bypass_enabled,
                             palette.error,
                             palette,
                             || Some(ConfirmModal::UnlockBootloader),
@@ -1668,13 +1685,21 @@ impl App {
                             &mut cols[1],
                             "Relock Bootloader",
                             "Set seccfg back to the locked state",
-                            is_connected && !is_busy,
+                            bypass_enabled,
                             palette.text,
                             palette,
                             || Some(ConfirmModal::LockBootloader),
                             &mut self.confirm_modal,
                         );
                     });
+                    if !da_patched {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Requires a patched DA. Connect an exploitable device to enable.")
+                                .color(palette.text_faint)
+                                .size(9.5),
+                        );
+                    }
                 });
 
             ui.add_space(12.0);
@@ -1710,8 +1735,14 @@ impl App {
                     let auth_btn = egui::Button::new(RichText::new("Authenticate RPMB").size(11.5))
                         .min_size(Vec2::new(ui.available_width().max(0.0), 26.0));
                     if ui
-                        .add_enabled(is_connected && !is_busy && key_valid, auth_btn)
-                        .on_disabled_hover_text("Connect a device and provide a hex encoded RPMB key")
+                        .add_enabled(bypass_enabled && key_valid, auth_btn)
+                        .on_disabled_hover_text(
+                            if !da_patched {
+                                "Connect an exploitable device (DA must be patched) and provide a hex encoded RPMB key"
+                            } else {
+                                "Provide a hex encoded RPMB key"
+                            },
+                        )
                         .clicked()
                     {
                         let key = self.rpmb_key.trim().to_string();
@@ -1724,7 +1755,7 @@ impl App {
                             &mut cols[0],
                             "Unlock RPMB",
                             "Bypass the default MediaTek RPMB lock (UFS only)",
-                            is_connected && !is_busy,
+                            bypass_enabled,
                             palette.error,
                             palette,
                             || Some(ConfirmModal::UnlockRpmb),
@@ -1734,7 +1765,7 @@ impl App {
                             &mut cols[1],
                             "Relock RPMB",
                             "Restore the default RPMB lock state",
-                            is_connected && !is_busy,
+                            bypass_enabled,
                             palette.text,
                             palette,
                             || Some(ConfirmModal::LockRpmb),

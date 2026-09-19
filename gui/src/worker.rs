@@ -181,6 +181,16 @@ fn connect_and_serve(
     dev.enter_da_mode()?;
     info!("Sending Download-Agent to device... OK");
 
+    // The exploit cascade runs inside upload_da; report whether it patched the
+    // DA (and thus loaded the extensions needed for security bypass).
+    let da_patched = dev.da_patched();
+    if da_patched {
+        info!("Download Agent patched via exploit - DA extensions loaded, bypass operations available.");
+    } else {
+        warn!("Download Agent was NOT patched (no matching exploit or fused device).");
+        warn!("Security bypass operations (seccfg / RPMB) will be unavailable on this device.");
+    }
+
     // SLA / DAA authorization is negotiated by the DA load above.
     info!("Authorizing device for operations... OK");
 
@@ -214,6 +224,7 @@ fn connect_and_serve(
         sla: (target_cfg & 0x2) != 0,
         daa: (target_cfg & 0x4) != 0,
         storage_type,
+        da_patched,
     };
 
     let _ = evt_tx.send(Event::DeviceInfo(summary));

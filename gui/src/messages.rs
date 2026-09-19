@@ -32,6 +32,9 @@ pub struct DeviceSummary {
     pub sla: bool,
     pub daa: bool,
     pub storage_type: String,
+    /// Whether the loaded Download Agent was patched by an exploit (i.e. the
+    /// DA extensions are loaded and security bypass operations are available).
+    pub da_patched: bool,
 }
 
 /// High-level connection state.
