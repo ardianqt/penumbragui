@@ -19,6 +19,10 @@ pub struct LocalKeyring {
 }
 
 impl Signer for LocalKeyring {
+    fn name(&self) -> &str {
+        "Local keyring"
+    }
+
     fn sign(&self, req: &SignRequest) -> Result<Vec<u8>> {
         let key = self
             .keys

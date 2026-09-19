@@ -250,6 +250,10 @@ impl RemoteSigner {
 }
 
 impl Signer for RemoteSigner {
+    fn name(&self) -> &str {
+        "Remote signer"
+    }
+
     fn can_handle(&self, pubk_mod: &[u8]) -> bool {
         let Some(access_token) = self.ensure_authenticated() else {
             return false;

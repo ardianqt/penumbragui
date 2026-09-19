@@ -5,6 +5,8 @@
 use std::fmt::Debug;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use log::info;
+
 #[cfg(feature = "localslakeyring")]
 use crate::auth::local_keyring::LocalKeyring;
 use crate::error::{AuthError, Result};
@@ -43,6 +45,11 @@ pub struct SignRequest {
 }
 
 pub trait Signer: Send + Sync {
+    /// Human readable name of this signer, used for logging which signer
+    /// handled a challenge (e.g. "Local keyring", "Remote signer").
+    fn name(&self) -> &str {
+        "signer"
+    }
     /// Whether the signer can handle a a sign request,
     /// for example, if it matches the public key
     fn can_handle(&self, pubk_mod: &[u8]) -> bool;
@@ -107,6 +114,7 @@ impl AuthManager {
 
         for signer in signers {
             if signer.can_handle(&req.pubk_mod) && signer.is_authorized(req) {
+                info!("[Auth] Signing {:?} using '{}'", req.purpose, signer.name());
                 return signer.sign(req);
             }
         }
