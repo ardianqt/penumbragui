@@ -243,7 +243,7 @@ impl DeviceReporter {
     }
 
     fn read_ext4(
-        mut reader: DeviceBlockReader<'_, '_>,
+        reader: DeviceBlockReader<'_, '_>,
         partition_name: &str,
     ) -> Result<HashMap<String, String>> {
         let mut fs = Ext4::new(reader)?;
@@ -263,7 +263,7 @@ impl DeviceReporter {
     }
 
     fn read_erofs(
-        mut reader: DeviceBlockReader<'_, '_>,
+        reader: DeviceBlockReader<'_, '_>,
         partition_name: &str,
     ) -> Result<HashMap<String, String>> {
         let mut fs = Erofs::new(reader)?;
