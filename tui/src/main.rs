@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_macros)]
+
 /*
     SPDX-License-Identifier: AGPL-3.0-or-later
     SPDX-FileCopyrightText: 2025-2026 Shomy
