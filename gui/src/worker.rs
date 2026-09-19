@@ -201,7 +201,7 @@ fn connect_and_serve(
     };
 
     let _ = evt_tx.send(Event::DeviceInfo(summary));
-    let _ = evt_tx.send(Event::StatusChanged(ConnStatus::Connected(chip_name)));
+    let _ = evt_tx.send(Event::StatusChanged(ConnStatus::Connected(chip_name.clone())));
 
     info!("Reading partitions information...");
     let partitions = dev.partitions().to_vec();
