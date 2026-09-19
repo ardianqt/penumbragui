@@ -165,8 +165,12 @@ impl DeviceReporter {
     pub fn run(device: &mut Device<'_, PortType>, chipset: &str) -> Result<DeviceReport> {
         let mut props_per_partition: Vec<HashMap<String, String>> = Vec::new();
 
+        let all_partitions = device.partitions();
+        info!("[Report] Found {} partitions: {:?}", all_partitions.len(), all_partitions.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
+
         for name in PROP_PARTITIONS {
             let Some(partition) = device.get_partition_active(name) else {
+                info!("[Report] partition '{name}' not found on device");
                 continue;
             };
 
