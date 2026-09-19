@@ -80,6 +80,14 @@ pub enum Command {
         input_path: PathBuf,
     },
     EraseRpmb,
+    RpmbAuth {
+        key: String,
+    },
+    RpmbLock(LockAction),
+    PatchDa {
+        input_path: PathBuf,
+        output_path: PathBuf,
+    },
     Reboot(BootMode),
     Shutdown,
 }

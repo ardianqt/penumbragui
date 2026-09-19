@@ -8,7 +8,7 @@
 
 use std::fs::{File, create_dir_all};
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use log::{error, info, warn};
 use penumbra::da::BootMode;
-use penumbra::hacc::LockState;
+use penumbra::hacc::{Da, DaVersion, LockState, TryRead, TryWrite};
 use penumbra::port::{PortBackend, PortType};
 use penumbra::storage::RpmbRegion;
 use penumbra::DeviceBuilder;
@@ -85,6 +85,22 @@ fn run_worker(cmd_rx: Receiver<Command>, evt_tx: Sender<Event>, cancel: Arc<Atom
             }
             Ok(Command::Disconnect) => {
                 let _ = evt_tx.send(Event::StatusChanged(ConnStatus::Disconnected));
+            }
+            Ok(Command::PatchDa { input_path, output_path }) => {
+                // Offline operation: it does not require a connected device.
+                let _ = evt_tx.send(Event::InputEnabled(false));
+                match patch_da_file(&input_path, &output_path) {
+                    Ok(()) => {
+                        let msg = format!("Patched DA written to {}", output_path.display());
+                        info!("{msg}");
+                        let _ = evt_tx.send(Event::Info(msg));
+                    }
+                    Err(e) => {
+                        error!("Failed to patch DA: {e}");
+                        let _ = evt_tx.send(Event::Error(format!("Patch DA failed: {e}")));
+                    }
+                }
+                let _ = evt_tx.send(Event::InputEnabled(true));
             }
             Ok(_) => {
                 // Ignore commands received while disconnected
@@ -597,6 +613,58 @@ fn connect_and_serve(
                     }
                 }
             }
+            Command::RpmbAuth { key } => {
+                info!("Authenticating RPMB using provided key...");
+                match hex::decode(key.trim()) {
+                    Ok(key_bytes) => match dev.auth_rpmb(RpmbRegion::R0, &key_bytes) {
+                        Ok(()) => {
+                            let msg = "RPMB authentication successful!".to_string();
+                            info!("{msg}");
+                            let _ = evt_tx.send(Event::Info(msg));
+                        }
+                        Err(e) => {
+                            error!("Failed authenticating RPMB: {e}");
+                            let _ = evt_tx
+                                .send(Event::Error(format!("Failed authenticating RPMB: {e}")));
+                        }
+                    },
+                    Err(e) => {
+                        error!("Invalid RPMB key (not valid hex): {e}");
+                        let _ = evt_tx.send(Event::Error(format!("Invalid RPMB key: {e}")));
+                    }
+                }
+            }
+            Command::RpmbLock(action) => {
+                let (state, action_str) = match action {
+                    LockAction::Unlock => (LockState::Unlock, "unlock"),
+                    LockAction::Lock => (LockState::Lock, "lock"),
+                };
+                info!("Setting RPMB lock state to {action_str}...");
+                match dev.set_rpmb_lock_state(state) {
+                    Ok(()) => {
+                        let msg = format!("RPMB {action_str} successful!");
+                        info!("{msg}");
+                        let _ = evt_tx.send(Event::Info(msg));
+                    }
+                    Err(e) => {
+                        error!("RPMB {action_str} failed: {e}");
+                        let _ = evt_tx.send(Event::Error(format!("RPMB {action_str} failed: {e}")));
+                    }
+                }
+            }
+            Command::PatchDa { input_path, output_path } => {
+                match patch_da_file(&input_path, &output_path) {
+                    Ok(()) => {
+                        let msg = format!("Patched DA written to {}", output_path.display());
+                        info!("{msg}");
+                        let _ = evt_tx.send(Event::Info(msg));
+                    }
+                    Err(e) => {
+                        error!("Failed to patch DA: {e}");
+                        let _ = evt_tx.send(Event::Error(format!("Patch DA failed: {e}")));
+                    }
+                }
+            }
             Command::Reboot(mode) => {
                 let mode_str = match mode {
                     BootMode::Normal => "Normal",
@@ -622,6 +690,75 @@ fn connect_and_serve(
             break;
         }
     }
+
+    Ok(())
+}
+
+/// Patches a Download Agent (DA) file in place, applying the same patches that
+/// are used during exploitation, and writes the result to `output`.
+///
+/// This is the GUI equivalent of the `antumbra patchda` command: it allows
+/// preparing a patched DA that can be flashed on devices without going through
+/// the exploit flow.
+fn patch_da_file(input: &Path, output: &Path) -> Result<()> {
+    let buffer = std::fs::read(input)?;
+
+    info!("Reading DA file: {}", input.display());
+
+    let mut new_data = buffer.clone();
+
+    let Ok(mut da) = Da::try_read(&buffer) else {
+        anyhow::bail!("Failed to parse DA file (not a DA file?)");
+    };
+
+    info!("DA info:");
+    info!(" DA count: {:?}", da.header().da_count());
+    info!(" DA header version: {:?}", da.header().version());
+    info!("==================================================");
+
+    for mut entry in da.entries() {
+        info!(
+            "Patching 0x{:X?} (0x{:X?} - {:?})",
+            entry.hw_code(),
+            entry.hw_sub_code(),
+            entry.version()
+        );
+        match entry.version() {
+            DaVersion::V5 => penumbra::da::xflash::patch_da(&mut entry)?,
+            DaVersion::V6 => penumbra::da::xml::patch_da(&mut entry)?,
+            version => {
+                warn!("Unsupported DA version: {version:?} - ({:X?})", entry.hw_code());
+            }
+        }
+
+        let start = entry.da1().offset();
+        let end = entry.da1().end_offset();
+        new_data[start..end].copy_from_slice(entry.da1_code());
+
+        let start = entry.da2().offset();
+        let end = entry.da2().end_offset();
+        new_data[start..end].copy_from_slice(entry.da2_code());
+
+        info!("--------------------------------------------------");
+    }
+
+    info!("==================================================");
+
+    let header = da.header_mut();
+    let suffix = b"_antumbra\0";
+    let desc_bytes = header.desc().as_bytes();
+    let copy_len = desc_bytes.len().min(64 - suffix.len());
+
+    let mut new_desc = [0u8; 64];
+    new_desc[..copy_len].copy_from_slice(&desc_bytes[..copy_len]);
+    new_desc[copy_len..copy_len + suffix.len()].copy_from_slice(suffix);
+
+    header.set_desc(&new_desc);
+    header.try_write(&mut new_data)?;
+
+    std::fs::write(output, &new_data)?;
+
+    info!("Patched DA file written to: {}", output.display());
 
     Ok(())
 }
