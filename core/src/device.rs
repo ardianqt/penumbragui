@@ -463,6 +463,19 @@ impl<'a, P: MtkPort> Device<'a, P> {
         self.protocol.as_mut()
     }
 
+    /// Returns whether the loaded Download Agent was patched by an exploit.
+    ///
+    /// This is `false` until `enter_da_mode()` has run the exploit cascade, and
+    /// `true` afterwards if an exploit (or an unfused device) patched the DA and
+    /// loaded the DA extensions required for security bypass operations.
+    pub fn da_patched(&self) -> bool {
+        match &self.protocol {
+            Some(DaProtocol::V5(x)) => x.is_patched(),
+            Some(DaProtocol::V6(x)) => x.is_patched(),
+            None => false,
+        }
+    }
+
     /// Provides scoped access to both the DA protocol and the MtkPort simultaneously.
     /// Useful when requiring direct access to protocol specific commands that are not
     /// exposed in the `DaProtocol` abstraction.

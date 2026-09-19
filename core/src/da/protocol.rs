@@ -118,6 +118,12 @@ pub enum DaProtocol<'a> {
 pub trait DownloadProtocol {
     /* Upload and boot a Download Agent */
     fn upload_da<P: MtkPort>(&mut self, port: &mut P, da: &mut DaEntry<'_>) -> Result<()>;
+    /// Returns whether the loaded Download Agent was patched by an exploit.
+    ///
+    /// This is set to `true` after a successful exploit run during `upload_da`,
+    /// meaning DA extensions are loaded and security bypass operations
+    /// (seccfg, RPMB) are available.
+    fn is_patched(&self) -> bool;
     /* Run and jump to code */
     fn boot_to<P: MtkPort>(&mut self, port: &mut P, addr: u32, data: &[u8]) -> Result<()>;
     /* Read data from the device, size is automatically determined by the protocol */

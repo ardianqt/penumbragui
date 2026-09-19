@@ -374,10 +374,13 @@ impl<'a> XFlash<'a> {
 }
 
 impl<'a> DownloadProtocol for XFlash<'a> {
+    fn is_patched(&self) -> bool {
+        self.patched
+    }
+
     fn upload_da<P: MtkPort>(&mut self, port: &mut P, da: &mut DaEntry) -> Result<()> {
         exploit!(Unfused, self, port, da);
         exploit!(Linecode, self, port, da);
-
         self.activity.set(Activity::UploadingDa);
         self.upload_stage1(port, da)?;
 

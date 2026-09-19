@@ -604,6 +604,10 @@ impl Xml {
 }
 
 impl DownloadProtocol for Xml {
+    fn is_patched(&self) -> bool {
+        self.patched
+    }
+
     fn upload_da<P: MtkPort>(&mut self, port: &mut P, da: &mut DaEntry<'_>) -> Result<()> {
         exploit!(Unfused, self, port, da);
 
