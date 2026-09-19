@@ -23,6 +23,7 @@ use penumbra::{Device, PortType};
 
 use crate::ext4::{BlockReader, Ext4};
 use crate::erofs::Erofs;
+use crate::super_lp::{LogicalReader, SuperLp};
 
 /// Partitions scanned for build.prop, in authoritive order.
 const PROP_PARTITIONS: &[&str] = &["system", "vendor", "product"];
@@ -166,11 +167,10 @@ impl DeviceReporter {
         let mut props_per_partition: Vec<HashMap<String, String>> = Vec::new();
 
         let all_partitions = device.partitions();
-        info!("[Report] Found {} partitions: {:?}", all_partitions.len(), all_partitions.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
+        info!("[Report] Found {} partitions on device", all_partitions.len());
 
         for name in PROP_PARTITIONS {
             let Some(partition) = device.get_partition_active(name) else {
-                info!("[Report] partition '{name}' not found on device");
                 continue;
             };
 
@@ -178,6 +178,19 @@ impl DeviceReporter {
                 Ok(props) if !props.is_empty() => props_per_partition.push(props),
                 Ok(_) => info!("[Report] {name} partition has no build.prop"),
                 Err(e) => warn!("[Report] {name} build.prop unavailable: {e}"),
+            }
+        }
+
+        if props_per_partition.is_empty() {
+            info!("[Report] No build.prop from physical partitions, trying super logical partitions...");
+            if let Some(super_part) = device.get_partition_active("super") {
+                match Self::read_super_props(device, &super_part) {
+                    Ok(props) if !props.is_empty() => props_per_partition.push(props),
+                    Ok(_) => info!("[Report] super: no build.prop found in logical partitions"),
+                    Err(e) => warn!("[Report] super logical partition read failed: {e}"),
+                }
+            } else {
+                info!("[Report] no 'super' partition found either");
             }
         }
 
@@ -246,8 +259,78 @@ impl DeviceReporter {
         }
     }
 
+    fn read_super_props(
+        device: &mut Device<'_, PortType>,
+        super_partition: &Partition,
+    ) -> Result<HashMap<String, String>> {
+        let lp = {
+            let mut reader = DeviceBlockReader::new(device, super_partition);
+            SuperLp::new(&mut reader)?
+        };
+
+        info!("[Report] super logical partitions: {:?}", lp.names());
+
+        let mut props_per_partition: Vec<HashMap<String, String>> = Vec::new();
+
+        for name in PROP_PARTITIONS {
+            let Some(extents) = lp.get_extents(name) else {
+                info!("[Report] logical partition '{name}' not found in super");
+                continue;
+            };
+            info!(
+                "[Report] logical '{name}': {} extents, total {} blocks",
+                extents.len(),
+                extents.iter().map(|e| e.num_blocks).sum::<u64>()
+            );
+
+            match Self::read_logical_props(device, super_partition, extents, lp.block_size, name) {
+                Ok(props) if !props.is_empty() => props_per_partition.push(props),
+                Ok(_) => info!("[Report] logical '{name}' has no build.prop"),
+                Err(e) => warn!("[Report] logical '{name}' build.prop unavailable: {e}"),
+            }
+        }
+
+        let mut merged = HashMap::new();
+        for props in &props_per_partition {
+            for (k, v) in props {
+                merged.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        Ok(merged)
+    }
+
+    fn read_logical_props(
+        device: &mut Device<'_, PortType>,
+        super_partition: &Partition,
+        extents: Vec<crate::super_lp::LpExtent>,
+        block_size: u32,
+        name: &str,
+    ) -> Result<HashMap<String, String>> {
+        let mut reader = LogicalReader::new(device, super_partition, extents, block_size);
+        let fs_kind = probe_fs(&mut reader);
+
+        info!("[Report] logical '{name}' filesystem: {}", fs_kind.label());
+
+        match fs_kind {
+            FsKind::Ext4 => Self::read_ext4(reader, name),
+            FsKind::Erofs { compressed: false } => Self::read_erofs(reader, name),
+            FsKind::Erofs { compressed: true } => {
+                warn!("[Report] logical '{name}' is compressed EROFS; build.prop unavailable");
+                Ok(HashMap::new())
+            }
+            FsKind::Sparse => {
+                warn!("[Report] logical '{name}' has sparse header (unexpected)");
+                Ok(HashMap::new())
+            }
+            FsKind::Unknown => {
+                info!("[Report] logical '{name}' filesystem not recognized; skipping");
+                Ok(HashMap::new())
+            }
+        }
+    }
+
     fn read_ext4(
-        reader: DeviceBlockReader<'_, '_>,
+        reader: impl BlockReader,
         partition_name: &str,
     ) -> Result<HashMap<String, String>> {
         let mut fs = Ext4::new(reader)?;
@@ -267,7 +350,7 @@ impl DeviceReporter {
     }
 
     fn read_erofs(
-        reader: DeviceBlockReader<'_, '_>,
+        reader: impl BlockReader,
         partition_name: &str,
     ) -> Result<HashMap<String, String>> {
         let mut fs = Erofs::new(reader)?;

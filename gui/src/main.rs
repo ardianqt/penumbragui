@@ -13,6 +13,7 @@ mod erofs;
 mod ext4;
 mod log_bridge;
 mod messages;
+mod super_lp;
 mod theme;
 mod worker;
 
