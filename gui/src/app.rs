@@ -1917,7 +1917,7 @@ impl App {
             .persisted
             .da_path
             .as_ref()
-            .map(patched_output_path)
+            .map(|p| patched_output_path(p))
             .unwrap_or_default();
 
         ScrollArea::vertical().id_salt("settings_scroll").show(ui, |ui| {
