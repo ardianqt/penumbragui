@@ -45,7 +45,7 @@ impl Tab {
         match self {
             Tab::Flasher => "Flasher",
             Tab::Partitions => "Partitions",
-            Tab::Tools => "Reboot & Power",
+            Tab::Tools => "Bypass & Power",
             Tab::Settings => "Settings",
         }
     }
@@ -54,8 +54,8 @@ impl Tab {
         match self {
             Tab::Flasher => "Partition image flashing & scatter layout",
             Tab::Partitions => "PGPT partition table inspector & backup",
-            Tab::Tools => "Device reboot modes & power state",
-            Tab::Settings => "Connection backends & binary paths",
+            Tab::Tools => "Bootloader & RPMB bypass, reboot modes & power state",
+            Tab::Settings => "Connection backends, binary paths & SLA signing",
         }
     }
 }
@@ -176,6 +176,8 @@ pub enum ConfirmModal {
     ErasePartition(String),
     UnlockBootloader,
     LockBootloader,
+    UnlockRpmb,
+    LockRpmb,
     Reboot(BootMode),
     Shutdown,
 }
@@ -197,6 +199,16 @@ pub struct App {
     info_toast: Option<(String, Instant)>,
     error_modal: Option<String>,
     confirm_modal: Option<ConfirmModal>,
+    /// Hex encoded RPMB authentication key (bypass / security tooling).
+    rpmb_key: String,
+    /// Online SLA signing server configuration (editable copy; applied on restart).
+    auth_online: bool,
+    auth_endpoint: String,
+    auth_username: String,
+    auth_password: String,
+    /// Set by the Settings tab UI; acted on once the panel closure has dropped its borrows.
+    auth_save_requested: bool,
+    patch_da_requested: bool,
 
     handle: WorkerHandle,
     evt_rx: Receiver<Event>,
@@ -222,6 +234,10 @@ impl App {
 
         theme::setup_fonts(&cc.egui_ctx);
         theme::apply(persisted.theme.palette(), &cc.egui_ctx);
+
+        // Load the persisted online SLA signing configuration so the Settings
+        // tab shows the values that the registered signer is currently using.
+        let auth_cfg = crate::config::PenumbraGuiConfig::load().map(|c| (*c).clone()).unwrap_or_default();
 
         let mut initial_logs = Vec::with_capacity(1000);
         initial_logs.push(LogLine {
@@ -262,6 +278,13 @@ impl App {
             info_toast: None,
             error_modal: None,
             confirm_modal: None,
+            rpmb_key: String::new(),
+            auth_online: auth_cfg.auth.online_auth,
+            auth_endpoint: auth_cfg.auth.endpoint.clone().unwrap_or_default(),
+            auth_username: auth_cfg.auth.username.clone().unwrap_or_default(),
+            auth_password: auth_cfg.auth.password.clone().unwrap_or_default(),
+            auth_save_requested: false,
+            patch_da_requested: false,
             handle,
             evt_rx,
             log_rx,
@@ -1611,6 +1634,114 @@ impl App {
                         );
                     });
                 });
+
+            ui.add_space(12.0);
+
+            // Bootloader (seccfg) bypass card
+            Frame::none()
+                .fill(palette.panel_alt)
+                .stroke(Stroke::new(1.0_f32, palette.border))
+                .rounding(Rounding::same(3.0))
+                .inner_margin(Margin::same(16.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Bootloader & Security (seccfg)").strong().color(palette.text).size(15.0));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Unlock or relock the bootloader by patching the seccfg partition. Requires an exploitable or unfused device in DA mode.")
+                            .color(palette.text_muted)
+                            .size(11.5),
+                    );
+                    ui.add_space(16.0);
+
+                    ui.columns(2, |cols| {
+                        Self::reboot_tile(
+                            &mut cols[0],
+                            "Unlock Bootloader",
+                            "Set seccfg to unlocked (allows booting unverified images)",
+                            is_connected && !is_busy,
+                            palette.error,
+                            palette,
+                            || Some(ConfirmModal::UnlockBootloader),
+                            &mut self.confirm_modal,
+                        );
+                        Self::reboot_tile(
+                            &mut cols[1],
+                            "Relock Bootloader",
+                            "Set seccfg back to the locked state",
+                            is_connected && !is_busy,
+                            palette.text,
+                            palette,
+                            || Some(ConfirmModal::LockBootloader),
+                            &mut self.confirm_modal,
+                        );
+                    });
+                });
+
+            ui.add_space(12.0);
+
+            // RPMB security card
+            Frame::none()
+                .fill(palette.panel_alt)
+                .stroke(Stroke::new(1.0_f32, palette.border))
+                .rounding(Rounding::same(3.0))
+                .inner_margin(Margin::same(16.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("RPMB Security").strong().color(palette.text).size(15.0));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Authenticate, unlock or relock the RPMB region. Unlocking requires an exploitable DA and works on UFS devices with the default MediaTek lock state.")
+                            .color(palette.text_muted)
+                            .size(11.5),
+                    );
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("RPMB Key (hex):").color(palette.text).size(12.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rpmb_key)
+                                .desired_width(200.0)
+                                .hint_text("e.g. 0011223344556677...")
+                                .interactive(!is_busy),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    let key_valid = !self.rpmb_key.trim().is_empty();
+                    let auth_btn = egui::Button::new(RichText::new("Authenticate RPMB").size(11.5))
+                        .min_size(Vec2::new(ui.available_width().max(0.0), 26.0));
+                    if ui
+                        .add_enabled(is_connected && !is_busy && key_valid, auth_btn)
+                        .on_disabled_hover_text("Connect a device and provide a hex encoded RPMB key")
+                        .clicked()
+                    {
+                        let key = self.rpmb_key.trim().to_string();
+                        let _ = self.handle.cmd_tx.send(Command::RpmbAuth { key });
+                    }
+                    ui.add_space(8.0);
+
+                    ui.columns(2, |cols| {
+                        Self::reboot_tile(
+                            &mut cols[0],
+                            "Unlock RPMB",
+                            "Bypass the default MediaTek RPMB lock (UFS only)",
+                            is_connected && !is_busy,
+                            palette.error,
+                            palette,
+                            || Some(ConfirmModal::UnlockRpmb),
+                            &mut self.confirm_modal,
+                        );
+                        Self::reboot_tile(
+                            &mut cols[1],
+                            "Relock RPMB",
+                            "Restore the default RPMB lock state",
+                            is_connected && !is_busy,
+                            palette.text,
+                            palette,
+                            || Some(ConfirmModal::LockRpmb),
+                            &mut self.confirm_modal,
+                        );
+                    });
+                });
         });
     }
 
@@ -1777,6 +1908,18 @@ impl App {
 
 impl App {
     fn render_settings_tab(&mut self, ui: &mut Ui, palette: &Palette) {
+        // Computed up front: the panel closure below holds mutable borrows of
+        // several fields (path rows, text inputs) for its whole duration, so
+        // anything the cards must read is captured into locals here instead.
+        let is_busy = !self.input_enabled || self.progress.active;
+        let has_da = self.persisted.da_path.is_some();
+        let patch_out = self
+            .persisted
+            .da_path
+            .as_ref()
+            .map(patched_output_path)
+            .unwrap_or_default();
+
         ScrollArea::vertical().id_salt("settings_scroll").show(ui, |ui| {
             // Hardware Port Backend Setting
             Frame::none()
@@ -1909,6 +2052,108 @@ impl App {
 
             ui.add_space(12.0);
 
+            // Patch Download Agent (offline)
+            Frame::none()
+                .fill(palette.panel_alt)
+                .stroke(Stroke::new(1.0_f32, palette.border))
+                .rounding(Rounding::same(3.0))
+                .inner_margin(Margin::same(14.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Patch Download Agent (Offline)").strong().color(palette.text).size(13.5));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Apply the exploitation patches to a DA file and write a patched copy. Equivalent to the `antumbra patchda` command. No device connection required.")
+                            .color(palette.text_muted)
+                            .size(11.5),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        RichText::new(if has_da {
+                            format!("Output: {patch_out}")
+                        } else {
+                            "Set a Custom DA File above to enable patching.".to_string()
+                        })
+                        .color(if has_da { palette.text_muted } else { palette.warn })
+                        .monospace()
+                        .size(10.5),
+                    );
+                    ui.add_space(8.0);
+
+                    let btn = egui::Button::new(RichText::new("Patch DA").size(11.5))
+                        .min_size(Vec2::new(ui.available_width().max(0.0), 26.0));
+                    if ui
+                        .add_enabled(!is_busy && has_da, btn)
+                        .on_disabled_hover_text("Set a Custom DA File in 'Binary & Authentication Overrides' first")
+                        .clicked()
+                    {
+                        self.patch_da_requested = true;
+                    }
+                });
+
+            ui.add_space(12.0);
+
+            // Online SLA / DAA signing server
+            Frame::none()
+                .fill(palette.panel_alt)
+                .stroke(Stroke::new(1.0_f32, palette.border))
+                .rounding(Rounding::same(3.0))
+                .inner_margin(Margin::same(14.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("SLA / DAA Online Signing").strong().color(palette.text).size(13.5));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Sign SLA protected devices through a remote Penumbra signing server. Credentials are stored in the OS config directory. Restart the GUI after saving to apply.")
+                            .color(palette.text_muted)
+                            .size(11.5),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.auth_online, RichText::new("Enable online auth").color(palette.text).size(12.0));
+                    });
+                    ui.add_space(6.0);
+
+                    egui::Grid::new("sla_settings_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Server endpoint:").color(palette.text).size(12.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.auth_endpoint)
+                                    .desired_width(220.0)
+                                    .hint_text("https://sign.example.com")
+                                    .interactive(!is_busy),
+                            );
+                            ui.end_row();
+
+                            ui.label(RichText::new("Username:").color(palette.text).size(12.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.auth_username)
+                                    .desired_width(220.0)
+                                    .hint_text("(optional)")
+                                    .interactive(!is_busy),
+                            );
+                            ui.end_row();
+
+                            ui.label(RichText::new("Password:").color(palette.text).size(12.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.auth_password)
+                                    .desired_width(220.0)
+                                    .hint_text("(optional)")
+                                    .interactive(!is_busy),
+                            );
+                            ui.end_row();
+                        });
+
+                    ui.add_space(8.0);
+                    if ui.button(RichText::new("Save settings").size(11.5)).clicked() {
+                        self.auth_save_requested = true;
+                    }
+                });
+
+            ui.add_space(12.0);
+
             // About Penumbra
             Frame::none()
                 .fill(palette.panel_alt)
@@ -1930,6 +2175,39 @@ impl App {
                     );
                 });
         });
+
+        // Act on the Settings tab requests now that the panel closure has
+        // released its mutable borrows of the edited fields.
+        if self.patch_da_requested {
+            self.patch_da_requested = false;
+            if let Some(input) = self.persisted.da_path.clone() {
+                let output = PathBuf::from(patched_output_path(&input));
+                self.send_cmd(Command::PatchDa { input_path: input, output_path: output });
+            }
+        }
+
+        if self.auth_save_requested {
+            self.auth_save_requested = false;
+
+            let cfg = crate::config::PenumbraGuiConfig {
+                auth: crate::config::AuthConfig {
+                    online_auth: self.auth_online,
+                    endpoint: trimmed_opt(&self.auth_endpoint),
+                    username: trimmed_opt(&self.auth_username),
+                    password: trimmed_opt(&self.auth_password),
+                },
+            };
+
+            match cfg.save() {
+                Ok(()) => {
+                    self.toast("SLA signing settings saved. Restart the GUI to apply them.");
+                }
+                Err(e) => {
+                    log::error!("Failed to save SLA settings: {e}");
+                    self.error_modal = Some(format!("Failed to save settings: {e}"));
+                }
+            }
+        }
     }
 
     fn grid_path_row(
@@ -2307,6 +2585,18 @@ impl App {
                         "Ensure all partitions are running verified stock firmware.",
                         false,
                     ),
+                    ConfirmModal::UnlockRpmb => (
+                        "Unlock the RPMB partition?".to_string(),
+                        "Bypasses RPMB protection. Works on UFS devices with the default \
+                         MediaTek lock state and requires an exploitable DA. This does not \
+                         guarantee a full unlock.",
+                        true,
+                    ),
+                    ConfirmModal::LockRpmb => (
+                        "Relock the RPMB partition?".to_string(),
+                        "Restores the default MediaTek RPMB lock state.",
+                        false,
+                    ),
                     ConfirmModal::Reboot(mode) => (
                         format!("Reboot device into {:?} mode?", mode),
                         "Device will disconnect and exit Download Agent mode.",
@@ -2362,6 +2652,12 @@ impl App {
                                 ConfirmModal::LockBootloader => {
                                     self.send_cmd(Command::Seccfg(LockAction::Lock));
                                 }
+                                ConfirmModal::UnlockRpmb => {
+                                    self.send_cmd(Command::RpmbLock(LockAction::Unlock));
+                                }
+                                ConfirmModal::LockRpmb => {
+                                    self.send_cmd(Command::RpmbLock(LockAction::Lock));
+                                }
                                 ConfirmModal::Reboot(mode) => {
                                     self.send_cmd(Command::Reboot(mode));
                                 }
@@ -2375,4 +2671,24 @@ impl App {
                 });
             });
     }
+}
+
+/// Default output path for a patched DA file: same directory, `<stem>_patched.bin`.
+fn patched_output_path(input: &Path) -> String {
+    match input.file_stem().and_then(|s| s.to_str()) {
+        Some(stem) => {
+            let name = format!("{stem}_patched.bin");
+            match input.parent() {
+                Some(parent) => parent.join(name).display().to_string(),
+                None => name,
+            }
+        }
+        None => input.display().to_string(),
+    }
+}
+
+/// Returns the trimmed string as `Some` when non-empty, otherwise `None`.
+fn trimmed_opt(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
 }
