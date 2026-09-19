@@ -166,7 +166,7 @@ impl DeviceReporter {
         let mut props_per_partition: Vec<HashMap<String, String>> = Vec::new();
 
         for name in PROP_PARTITIONS {
-            let Some(partition) = device.get_partition(name) else {
+            let Some(partition) = device.get_partition_active(name) else {
                 continue;
             };
 
