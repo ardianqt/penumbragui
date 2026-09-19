@@ -140,8 +140,8 @@ impl<R: BlockReader> Ext4<R> {
             bail!("inode {inode} out of range");
         }
 
-        let group = ((inode - 1) / self.inodes_per_group) as u64;
-        let index = ((inode - 1) % self.inodes_per_group) as u64;
+        let group = (inode as u64 - 1) / self.inodes_per_group;
+        let index = (inode as u64 - 1) % self.inodes_per_group;
 
         let table_block = self.inode_table_block(group)?;
         let inode_off = table_block * self.block_size as u64 + index * self.inode_size as u64;
